@@ -10,13 +10,19 @@ app = Flask(__name__)
 DATABASE_URL = os.environ.get("DATABASE_URL")
 SECRET_KEY = os.environ.get("SECRET_KEY")
 
+# 🔒 Safety checks (prevents silent crash)
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL not set")
+
+if not SECRET_KEY:
+    raise RuntimeError("SECRET_KEY not set")
+
 cipher = Fernet(SECRET_KEY.encode())
 
 # 🔒 Rate limit config
 RATE_LIMIT = 10
-WINDOW = 1800
+WINDOW = 1800  # 30 minutes
 
-# Store timestamps per IP (bounded)
 request_log = {}
 
 def is_rate_limited(ip):
@@ -24,7 +30,7 @@ def is_rate_limited(ip):
 
     logs = request_log.get(ip, [])
 
-    # keep only recent timestamps (in-place to reduce memory churn)
+    # keep only timestamps in window
     new_logs = []
     for t in logs:
         if now - t < WINDOW:
@@ -37,13 +43,17 @@ def is_rate_limited(ip):
     new_logs.append(now)
     request_log[ip] = new_logs
 
+    # prevent memory growth
+    if len(request_log) > 1000:
+        request_log.clear()
+
     return False
 
 
 def save_user(username, password, text):
     encrypted_text = cipher.encrypt(text.encode()).decode()
 
-    # use context manager → auto close (safer, less leak risk)
+    # safe DB usage (auto close)
     with psycopg2.connect(DATABASE_URL) as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -61,6 +71,7 @@ def home():
 def submit():
     ip = request.remote_addr or "unknown"
 
+    # rate limit check
     if is_rate_limited(ip):
         return redirect(url_for("home"))
 
@@ -74,5 +85,4 @@ def submit():
 
 
 if __name__ == "__main__":
-    # turn off debug → reduces memory + CPU
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8000)), debug=False)
